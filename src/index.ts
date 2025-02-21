@@ -31,29 +31,21 @@ app.get("/", (req, res) => {
 });
 
 // @ts-ignore
-app.get("/coins", async (req, res) => {
+const COINS_CACHE_KEY = "all-coins"; // Key for storing full data
+const CACHE_EXPIRATION = 600; // Cache expiration in seconds (10 minutes)
+
+// Function to fetch and cache full CoinGecko data
+const fetchAndCacheCoins = async () => {
   try {
-    const { page = 1, item = 10 } = req.query;
-    const cacheKey = `coins-page-${page}-item-${item}`;
-
-    // 1. Check if data is in Redis cache
-    const cachedData = await redis.get(cacheKey);
-
-    if (cachedData) {
-      console.log("Serving from cache");
-      return res.json(cachedData);
-    }
-
-    // 2. Fetch data from CoinGecko if not in cache
-    console.log("Fetching new data from API...");
+    console.log("Fetching full CoinGecko data...");
     const response = await axios.get(
       "https://api.coingecko.com/api/v3/coins/markets",
       {
         params: {
           vs_currency: "usd",
           order: "market_cap_desc",
-          per_page: item,
-          page,
+          per_page: 250, // Max items per request
+          page: 1, // Start from page 1
         },
         headers: {
           accept: "application/json",
@@ -61,17 +53,89 @@ app.get("/coins", async (req, res) => {
       }
     );
 
-    const data = response.data;
+    let allCoins = response.data;
 
-    // 3. Store data in Redis with expiration (60 seconds)
-    await redis.set(cacheKey, JSON.stringify(data), { ex: 120 });
+    // Fetch additional pages if needed
+    for (let i = 2; i <= 4; i++) {
+      const additionalData = await axios.get(
+        "https://api.coingecko.com/api/v3/coins/markets",
+        {
+          params: {
+            vs_currency: "usd",
+            order: "market_cap_desc",
+            per_page: 250, // Max items per request
+            page: i, // Next page
+          },
+          headers: {
+            accept: "application/json",
+          },
+        }
+      );
+      allCoins = [...allCoins, ...additionalData.data];
+    }
 
-    res.json(data);
+    // Store full dataset in Redis
+    await redis.set(COINS_CACHE_KEY, JSON.stringify(allCoins), {
+      ex: CACHE_EXPIRATION,
+    });
+
+    console.log("Coin data cached successfully!");
   } catch (error) {
-    console.error("Error fetching data:", error);
+    console.error("Error fetching CoinGecko data:", error);
+  }
+};
+
+// Route to serve paginated coins from cache
+app.get("/coins", async (req, res) => {
+  try {
+    const { page = 1, item = 10 } = req.query;
+    // @ts-ignore
+    const pageNumber = parseInt(page, 10);
+    // @ts-ignore
+    const itemsPerPage = parseInt(item, 10);
+
+    // Check if full data exists in cache
+    let cachedData = await redis.get(COINS_CACHE_KEY);
+    if (!cachedData) {
+      console.log("Cache empty, fetching fresh data...");
+      await fetchAndCacheCoins();
+      cachedData = await redis.get(COINS_CACHE_KEY);
+    }
+
+    // Parse data
+    // @ts-ignore
+    let allCoins;
+    try {
+      allCoins =
+        typeof cachedData === "string" ? JSON.parse(cachedData) : cachedData;
+    } catch (error) {
+      console.error("Error parsing JSON from Redis:", error);
+      allCoins = []; // Fallback if parsing fails
+    }
+
+    // Paginate data
+    const startIndex = (pageNumber - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const paginatedData = allCoins.slice(startIndex, endIndex);
+
+    res.json({
+      totalItems: allCoins.length,
+      totalPages: Math.ceil(allCoins.length / itemsPerPage),
+      currentPage: pageNumber,
+      perPage: itemsPerPage,
+      coins: paginatedData,
+    });
+  } catch (error) {
+    console.error("Error fetching paginated data:", error);
     res.status(500).json({ error: "Failed to fetch data" });
   }
 });
+
+// Fetch and cache data on server start
+fetchAndCacheCoins();
+
+// Refresh cache every 10 minutes
+setInterval(fetchAndCacheCoins, CACHE_EXPIRATION * 1000);
 
 // Global Error Handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
