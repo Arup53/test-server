@@ -25,6 +25,25 @@ const redis = new Redis({
   token: process.env.REDIS_PASSWORD,
 });
 
+const maxValue = 2;
+let token = 0;
+
+function incToken() {
+  if (token < maxValue) {
+    token++;
+  }
+}
+
+setInterval(incToken, 2000);
+
+app.get("/", async (req, res) => {
+  if (token !== 0) {
+    token--;
+
+    res.send({ message: "success" });
+  } else res.send({ message: "Sorry, server is busy" });
+});
+
 // Sample Route
 app.get("/", (req, res) => {
   res.json({ message: "how u doin" });
@@ -119,10 +138,10 @@ app.get("/coins", async (req, res) => {
     const paginatedData = allCoins.slice(startIndex, endIndex);
 
     res.json({
-      totalItems: allCoins.length,
-      totalPages: Math.ceil(allCoins.length / itemsPerPage),
-      currentPage: pageNumber,
-      perPage: itemsPerPage,
+      // totalItems: allCoins.length,
+      // totalPages: Math.ceil(allCoins.length / itemsPerPage),
+      // currentPage: pageNumber,
+      // perPage: itemsPerPage,
       coins: paginatedData,
     });
   } catch (error) {
